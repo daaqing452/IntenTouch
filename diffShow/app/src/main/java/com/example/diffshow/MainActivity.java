@@ -2,6 +2,7 @@ package com.example.diffshow;
 
 import android.app.Activity;
 import android.graphics.Point;
+import android.hardware.SensorManager;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Message;
@@ -16,9 +17,11 @@ import android.widget.TextView;
 
 import java.io.FileOutputStream;
 import java.util.Date;
+import java.util.Timer;
+import java.util.TimerTask;
 
 public class MainActivity extends Activity {
-    public  final String TAG = "READ_DIFF_JAVA";
+    public final String TAG = "READ_DIFF_JAVA";
     //TextView tv;
     short diffData[] = new short[32*18];
     CapacityView capacityView;
@@ -29,12 +32,15 @@ public class MainActivity extends Activity {
         System.loadLibrary("native-lib");
     }
 
-    private   Handler myHandler = new Handler(){
+    private Handler myHandler = new Handler(){
         @Override
         public void handleMessage(Message msg) {
             capacityView.invalidate();
         }
     };
+
+    InertialSensor inertialSensor;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -55,7 +61,16 @@ public class MainActivity extends Activity {
 
         readDiffStart();
 
+        inertialSensor = new InertialSensor(this);
         timeStart = System.currentTimeMillis();
+
+        Timer timer = new Timer();
+        timer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                record();
+            }
+        }, 500, 10);
     }
 
     @Override
@@ -80,8 +95,6 @@ public class MainActivity extends Activity {
         diffData = capacityView.diffData = data;
         myHandler.obtainMessage(0).sendToTarget();
         //Log.d(TAG,"processDiff touchNum :"+data.touchNum);
-
-        myProcessDiff();
     }
     /**
      * A native method that is implemented by the 'native-lib' native library,
@@ -102,32 +115,44 @@ public class MainActivity extends Activity {
         return super.onKeyDown(keyCode, event);
     }
 
-    long timeStart, timeNow, timeCnt = 0;
+    long timeStart, timeNow;
     boolean logging = false;
     FileOutputStream logger = null;
 
-    void myProcessDiff() {
-        timeCnt++;
+    int bufferAdd(byte[] buffer, int bi, int d) {
+        buffer[bi++] = (byte) ((d & 0xff000000) >> 24);
+        buffer[bi++] = (byte) ((d & 0x00ff0000) >> 16);
+        buffer[bi++] = (byte) ((d & 0x0000ff00) >>  8);
+        buffer[bi++] = (byte) ((d & 0x000000ff) >>  0);
+        return bi;
+    }
+
+    void record() {
+        if (!logging || logger == null) return;
         timeNow = System.currentTimeMillis();
         int timeDelta = (int)(timeNow - timeStart);
-        //double fps = timeCnt / (timeDelta / 1000.0);
-        //if (timeCnt % 10 == 0) Log.d("mydiffshow", "fps: " + fps);
 
-        byte[] buffer = new byte[diffData.length * 2 + 4];
-        buffer[0] = (byte) ((timeDelta & 0xff000000) >> 24);
-        buffer[1] = (byte) ((timeDelta & 0x00ff0000) >> 16);
-        buffer[2] = (byte) ((timeDelta & 0x0000ff00) >>  8);
-        buffer[3] = (byte) ((timeDelta & 0x000000ff) >>  0);
-        for (int i = 0; i < diffData.length; i++) {
-            buffer[i * 2 + 4] = (byte) ((diffData[i] & 0xff00) >> 8);
-            buffer[i * 2 + 5] = (byte) ((diffData[i] & 0x00ff) >> 0);
+        byte[] buffer = new byte[4 + 3*4 + 3*4 + diffData.length*2];
+        int bi = 0;
+        bi = bufferAdd(buffer, bi, timeDelta);
+        for (int i = 0; i < 3; i++) {
+            int d = Float.floatToIntBits(inertialSensor.dataLinearAccelerometer[i]);
+            bi = bufferAdd(buffer, bi, d);
+            Log.d("mydiffshow", buffer[bi-4] + " " + buffer[bi-3] + " " + buffer[bi-2] + " " + buffer[bi-1]);
+            Log.d("mydiffshow", d + " " + inertialSensor.dataLinearAccelerometer[i]);
         }
-        if (logging) {
-            try {
-                if (logger != null) logger.write(buffer);
-            } catch (Exception e) {
-                Log.d("mydiffshow", e.toString());
-            }
+        for (int i = 0; i < 3; i++) {
+            int d = Float.floatToIntBits(inertialSensor.dataGyroscope[i]);
+            bi = bufferAdd(buffer, bi, d);
+        }
+        for (int i = 0; i < diffData.length; i++) {
+            buffer[bi++] = (byte) ((diffData[i] & 0xff00) >> 8);
+            buffer[bi++] = (byte) ((diffData[i] & 0x00ff) >> 0);
+        }
+        try {
+            logger.write(buffer);
+        } catch (Exception e) {
+            Log.d("mydiffshow", e.toString());
         }
     }
 
@@ -153,4 +178,5 @@ public class MainActivity extends Activity {
             Log.d("mydiffshow", "stop logging");
         }
     }
+
 }
